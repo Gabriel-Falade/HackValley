@@ -67,7 +67,7 @@ while True:
     
         if leftValue < WINK_THRESHOLD and not leftWink:
             leftWink = True
-            pyautogui.press('x') 
+            pyautogui.press('c') 
         elif leftWink:
             if leftDB > 0:
                 leftDB -= 1
@@ -77,7 +77,7 @@ while True:
 
         if rightValue < WINK_THRESHOLD and not rightWink:
             rightWink = True
-            pyautogui.press('c') 
+            pyautogui.press('x') 
         elif rightWink:
             if rightDB > 0:
                 rightDB -= 1
