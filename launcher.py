@@ -212,47 +212,88 @@ class LauncherApp:
 
     # ── UI construction ────────────────────────────────────────────────────────
     def _build_ui(self):
-        # Title
-        title_fr = tk.Frame(self.root, bg=C_BG)
-        title_fr.pack(fill="x", pady=(28, 0))
-        tk.Label(title_fr, text="FacePlay", bg=C_BG, fg=C_CYAN,
-                 font=("Segoe UI", 40, "bold")).pack()
-        tk.Label(title_fr,
-                 text='Say a game name to launch  •  Say "select" / "go" to confirm',
-                 bg=C_BG, fg=C_DIM, font=("Segoe UI", 13)).pack(pady=(4, 0))
+        # ── Header ────────────────────────────────────────────────────────────
+        header = tk.Frame(self.root, bg=C_BG)
+        header.pack(fill="x", pady=(24, 0))
 
-        # 2×2 card grid
+        tk.Label(header, text="FACEPLAY", bg=C_BG, fg=C_CYAN,
+                 font=("Segoe UI", 46, "bold"),
+                 ).pack()
+        tk.Label(header,
+                 text="Hands-free gaming for everyone  —  just a webcam",
+                 bg=C_BG, fg=C_DIM, font=("Segoe UI", 12)).pack(pady=(2, 0))
+
+        # Neon divider
+        div_canvas = tk.Canvas(header, bg=C_BG, height=3,
+                               width=WIN_W - 80, highlightthickness=0)
+        div_canvas.pack(pady=(14, 0))
+        div_canvas.create_line(0, 1, WIN_W - 80, 1,
+                               fill=C_CYAN, width=1)
+
+        # Instruction bar
+        inst_fr = tk.Frame(self.root, bg="#0d0d1c")
+        inst_fr.pack(fill="x")
+        tk.Label(inst_fr,
+                 text='Say a game name to launch   •   Tilt head to navigate   •   Say "select" to confirm',
+                 bg="#0d0d1c", fg=C_DIM, font=("Segoe UI", 10),
+                 pady=7).pack()
+
+        # ── 2×2 card grid ─────────────────────────────────────────────────────
         cards_fr = tk.Frame(self.root, bg=C_BG)
-        cards_fr.pack(expand=True)
+        cards_fr.pack(expand=True, pady=(10, 0))
 
         self._canvases = []
         for idx, (row, col) in enumerate([(0,0),(0,1),(1,0),(1,1)]):
             c = self._build_card(cards_fr, idx)
-            c.grid(row=row, column=col, padx=22, pady=18)
+            c.grid(row=row, column=col, padx=20, pady=14)
             self._canvases.append(c)
 
-        # Bottom bar
-        bot_fr = tk.Frame(self.root, bg=C_BG)
-        bot_fr.pack(fill="x", side="bottom", pady=8)
+        # ── Bottom bar ────────────────────────────────────────────────────────
+        bot_fr = tk.Frame(self.root, bg="#0d0d1c",
+                          highlightbackground=C_DIM, highlightthickness=1)
+        bot_fr.pack(fill="x", side="bottom")
 
-        # Webcam preview (bottom-right)
-        self._cam_label = tk.Label(bot_fr, bg="#111122",
+        # Cam preview with border
+        cam_wrap = tk.Frame(bot_fr, bg=C_CYAN, padx=2, pady=2)
+        cam_wrap.pack(side="right", padx=16, pady=8)
+        self._cam_label = tk.Label(cam_wrap, bg="#111122",
                                    width=CAM_W, height=CAM_H)
-        self._cam_label.pack(side="right", padx=18, pady=4)
+        self._cam_label.pack()
 
-        # Voice status (bottom-left)
-        self._voice_lbl = tk.Label(bot_fr, text="Mic ready", bg=C_BG,
-                                   fg=C_DIM, font=("Segoe UI", 11))
-        self._voice_lbl.pack(side="left", padx=18)
+        # Status column (left side)
+        status_col = tk.Frame(bot_fr, bg="#0d0d1c")
+        status_col.pack(side="left", padx=18, pady=8)
 
-        # Full-screen countdown overlay (hidden initially)
+        # Voice status
+        self._voice_lbl = tk.Label(
+            status_col, text="Mic ready",
+            bg="#0d0d1c", fg=C_DIM, font=("Segoe UI", 11), anchor="w")
+        self._voice_lbl.pack(anchor="w")
+
+        # Direction indicator
+        self._dir_lbl = tk.Label(
+            status_col, text="Head: --",
+            bg="#0d0d1c", fg=C_DIM, font=("Segoe UI", 10), anchor="w")
+        self._dir_lbl.pack(anchor="w", pady=(4, 0))
+
+        # Center: selected game name
+        self._sel_lbl = tk.Label(
+            bot_fr, text=GAMES[0]["name"].upper(),
+            bg="#0d0d1c", fg=C_CYAN,
+            font=("Segoe UI", 13, "bold"))
+        self._sel_lbl.pack(side="left", expand=True)
+
+        # ── Countdown overlay ─────────────────────────────────────────────────
         self._overlay = tk.Frame(self.root, bg=C_BG)
+        self._cd_game = tk.Label(self._overlay, text="", bg=C_BG,
+                                  fg=C_DIM, font=("Segoe UI", 14, "bold"))
+        self._cd_game.pack(pady=(0, 8), expand=True, anchor="s")
         self._cd_lbl  = tk.Label(self._overlay, text="", bg=C_BG,
-                                  fg=C_CYAN, font=("Segoe UI", 100, "bold"))
-        self._cd_lbl.pack(expand=True)
+                                  fg=C_CYAN, font=("Segoe UI", 110, "bold"))
+        self._cd_lbl.pack()
         self._cd_sub  = tk.Label(self._overlay, text="", bg=C_BG,
-                                  fg=C_WHITE, font=("Segoe UI", 22))
-        self._cd_sub.pack(pady=(0, 60))
+                                  fg=C_WHITE, font=("Segoe UI", 18))
+        self._cd_sub.pack(pady=(8, 80), anchor="n")
 
         # Key bindings
         self.root.bind("<Left>",   lambda e: self._move_h(-1))
@@ -263,29 +304,45 @@ class LauncherApp:
         self.root.bind("<Return>", lambda e: self._start_countdown())
         self.root.bind("<Escape>", lambda e: self._on_close())
 
+    # Controls shown on each card
+    _CARD_CONTROLS = {
+        "Flappy_Bird": ["Blink / Eyebrow  →  Flap"],
+        "Mario":       ["Tilt L/R  →  Run", "Eyebrow  →  Jump", "Blink  →  Sprint"],
+        "Snake":       ["Tilt head  →  Steer", "Blink  →  Dash", "Eyebrow hold  →  Slow-mo"],
+        "Pacman":      ["Tilt head  →  Move", "Eyebrow  →  Slow ghosts", "Hold blink 3s  →  Exit"],
+    }
+
     def _build_card(self, parent, idx):
         g = GAMES[idx]
         c = tk.Canvas(parent, width=CARD_W, height=CARD_H,
                       bg=C_CARD_BG, highlightthickness=0)
-        # Border
-        c.create_rectangle(3, 3, CARD_W-3, CARD_H-3,
-                            outline=g["accent"], width=3, tags="border")
-        # Top colour stripe
-        c.create_rectangle(3, 3, CARD_W-3, 10,
+        # Outer border (animated)
+        c.create_rectangle(2, 2, CARD_W-2, CARD_H-2,
+                            outline=C_DIM, width=2, tags="border")
+        # Top accent stripe
+        c.create_rectangle(2, 2, CARD_W-2, 8,
                             fill=g["accent"], outline="", tags="stripe")
         # Game name
-        c.create_text(CARD_W//2, 55, text=g["name"],
-                      fill=g["accent"], font=("Segoe UI", 20, "bold"))
-        # Mode tag
-        c.create_text(CARD_W//2, 90, text=f"Mode: {g['mode']}",
-                      fill=C_DIM, font=("Segoe UI", 11))
-        # Voice triggers
-        voice_hint = "  /  ".join(f'"{v}"' for v in g["voice"][:2])
-        c.create_text(CARD_W//2, 140, text=f"Say: {voice_hint}",
-                      fill=C_WHITE, font=("Segoe UI", 12))
-        # SELECT label — shown only when selected
-        c.create_text(CARD_W//2, CARD_H-36, text="[ SELECT ]",
-                      fill=g["accent"], font=("Segoe UI", 14, "bold"),
+        c.create_text(CARD_W//2, 40, text=g["name"].upper(),
+                      fill=g["accent"], font=("Segoe UI", 16, "bold"),
+                      tags="title")
+        # Thin separator line
+        c.create_line(24, 60, CARD_W-24, 60, fill="#1e1e30", width=1)
+        # Controls list
+        controls = self._CARD_CONTROLS.get(g["mode"], [])
+        for i, line in enumerate(controls):
+            c.create_text(CARD_W//2, 82 + i * 26, text=line,
+                          fill="#8888aa", font=("Segoe UI", 10),
+                          tags=f"ctrl_{i}")
+        # Second separator
+        c.create_line(24, CARD_H-58, CARD_W-24, CARD_H-58, fill="#1e1e30", width=1)
+        # Voice hint
+        voice_hint = ' / '.join(f'"{v}"' for v in g["voice"][:2])
+        c.create_text(CARD_W//2, CARD_H-40, text=f"Say: {voice_hint}",
+                      fill=C_DIM, font=("Segoe UI", 10), tags="voice")
+        # SELECT label (shown when active)
+        c.create_text(CARD_W//2, CARD_H-18, text="PRESS SPACE OR SAY SELECT",
+                      fill=g["accent"], font=("Segoe UI", 8, "bold"),
                       tags="launch_hint", state="hidden")
         c.bind("<Button-1>", lambda e, i=idx: self._card_clicked(i))
         return c
@@ -312,7 +369,7 @@ class LauncherApp:
         self._poll_tick()
 
     def _pulse_tick(self):
-        self._pulse_phase += 0.12
+        self._pulse_phase += 0.10
         v = int(128 + 127 * math.sin(self._pulse_phase))
         for idx, c in enumerate(self._canvases):
             g = GAMES[idx]
@@ -323,13 +380,26 @@ class LauncherApp:
                     max(gr // 2, int(gr * v / 255)),
                     max(b // 2, int(b * v / 255)),
                 )
-                c.itemconfig("border", outline=mixed, width=4)
+                c.itemconfig("border", outline=mixed, width=3)
                 c.itemconfig("launch_hint", state="normal")
-                c.configure(bg="#1a1a2e")
+                c.itemconfig("title", fill=mixed)
+                c.configure(bg="#14142a")
             else:
-                c.itemconfig("border", outline=C_DIM, width=2)
+                c.itemconfig("border", outline="#1e1e30", width=2)
                 c.itemconfig("launch_hint", state="hidden")
+                c.itemconfig("title", fill=g["accent"])
                 c.configure(bg=C_CARD_BG)
+
+        # Update selected game label in bottom bar
+        self._sel_lbl.configure(text=GAMES[self.selected]["name"].upper())
+
+        # Update head direction indicator
+        if self._cam_thread:
+            d = self._cam_thread.get_direction()
+            arrow = {"LEFT": "  LEFT", "RIGHT": "RIGHT", "UP": "   UP", "DOWN": "DOWN"}.get(d, "  --")
+            self._dir_lbl.configure(text=f"Head: {arrow}",
+                                    fg=C_CYAN if d else C_DIM)
+
         self.root.after(PULSE_MS, self._pulse_tick)
 
     def _webcam_tick(self):
@@ -415,7 +485,13 @@ class LauncherApp:
         self._overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self._overlay.lift()
         self._countdown_n = COUNTDOWN
-        self._cd_sub.configure(text=f"Launching: {GAMES[self.selected]['name']}")
+        g = GAMES[self.selected]
+        self._cd_game.configure(text=g["name"].upper(), fg=g["accent"])
+        self._cd_sub.configure(text="Get ready...")
+        self._overlay.configure(bg=C_BG)
+        self._cd_game.configure(bg=C_BG)
+        self._cd_lbl.configure(bg=C_BG)
+        self._cd_sub.configure(bg=C_BG)
         self._countdown_step()
 
     def _countdown_step(self):

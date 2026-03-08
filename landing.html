@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FacePlay — Hands-Free Gaming</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #07070f;
+      --bg2:     #0d0d1a;
+      --bg3:     #12121e;
+      --cyan:    #00ffff;
+      --purple:  #bf00ff;
+      --pink:    #ff00aa;
+      --white:   #e8e8f0;
+      --dim:     #555570;
+      --border:  #1e1e30;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--white);
+      overflow-x: hidden;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 48px;
+      background: rgba(7,7,15,0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo {
+      font-size: 1.4rem; font-weight: 800; letter-spacing: 2px;
+      color: var(--cyan);
+      text-shadow: 0 0 18px var(--cyan);
+    }
+    .nav-links { display: flex; gap: 32px; list-style: none; }
+    .nav-links a {
+      color: var(--dim); text-decoration: none; font-size: 0.9rem;
+      letter-spacing: 1px; text-transform: uppercase;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--cyan); }
+
+    /* ── HERO ── */
+    #hero {
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+      padding: 120px 24px 80px;
+      position: relative;
+      overflow: hidden;
+    }
+    #hero::before {
+      content: '';
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 60% 50% at 30% 40%, rgba(0,255,255,0.07) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 40% at 70% 60%, rgba(191,0,255,0.07) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-tag {
+      display: inline-block;
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      font-size: 0.75rem; letter-spacing: 3px; text-transform: uppercase;
+      padding: 6px 18px; border-radius: 99px;
+      margin-bottom: 28px;
+      box-shadow: 0 0 12px rgba(0,255,255,0.2);
+    }
+    .hero-title {
+      font-size: clamp(3rem, 8vw, 7rem);
+      font-weight: 900; letter-spacing: -2px; line-height: 1.05;
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--purple) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 24px;
+    }
+    .hero-sub {
+      font-size: clamp(1rem, 2vw, 1.3rem);
+      color: var(--dim); max-width: 580px; line-height: 1.7;
+      margin-bottom: 48px;
+    }
+    .hero-buttons { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 14px 32px; border-radius: 8px;
+      font-size: 0.95rem; font-weight: 700; letter-spacing: 1px;
+      text-decoration: none; transition: all 0.2s; cursor: pointer; border: none;
+    }
+    .btn-primary {
+      background: var(--cyan); color: #07070f;
+      box-shadow: 0 0 24px rgba(0,255,255,0.35);
+    }
+    .btn-primary:hover { box-shadow: 0 0 40px rgba(0,255,255,0.6); transform: translateY(-2px); }
+    .btn-secondary {
+      background: transparent; color: var(--white);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--cyan); color: var(--cyan); transform: translateY(-2px); }
+
+    /* ── STATS BAR ── */
+    #stats {
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 36px 48px;
+      display: flex; justify-content: center; gap: 80px; flex-wrap: wrap;
+    }
+    .stat { text-align: center; }
+    .stat-num {
+      font-size: 2.4rem; font-weight: 900;
+      color: var(--cyan);
+      text-shadow: 0 0 20px rgba(0,255,255,0.4);
+      display: block;
+    }
+    .stat-label { font-size: 0.8rem; color: var(--dim); letter-spacing: 1px; text-transform: uppercase; margin-top: 4px; }
+
+    /* ── SECTION COMMON ── */
+    section { padding: 100px 24px; }
+    .section-inner { max-width: 1100px; margin: 0 auto; }
+    .section-tag {
+      font-size: 0.75rem; letter-spacing: 3px; text-transform: uppercase;
+      color: var(--cyan); margin-bottom: 16px; display: block;
+    }
+    .section-title {
+      font-size: clamp(1.8rem, 4vw, 2.8rem);
+      font-weight: 800; line-height: 1.2; margin-bottom: 20px;
+    }
+    .section-body { color: var(--dim); line-height: 1.8; max-width: 620px; font-size: 1.05rem; }
+
+    /* ── PROBLEM ── */
+    #problem { background: var(--bg2); }
+    .problem-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 52px;
+    }
+    .problem-card {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 32px;
+      transition: border-color 0.2s;
+    }
+    .problem-card:hover { border-color: var(--purple); }
+    .problem-card-icon { font-size: 2rem; margin-bottom: 16px; }
+    .problem-card h3 { font-size: 1.1rem; margin-bottom: 10px; color: var(--white); }
+    .problem-card p { color: var(--dim); line-height: 1.7; font-size: 0.95rem; }
+    .problem-card .highlight { color: var(--cyan); font-weight: 700; }
+
+    /* ── HOW IT WORKS ── */
+    #how { background: var(--bg); }
+    .steps {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 32px; margin-top: 52px;
+    }
+    .step {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 32px 28px;
+      position: relative; transition: border-color 0.2s, transform 0.2s;
+    }
+    .step:hover { border-color: var(--cyan); transform: translateY(-4px); }
+    .step-num {
+      font-size: 3rem; font-weight: 900; line-height: 1;
+      color: transparent;
+      -webkit-text-stroke: 1px var(--border);
+      margin-bottom: 16px; display: block;
+    }
+    .step h3 { font-size: 1rem; font-weight: 700; margin-bottom: 10px; color: var(--cyan); }
+    .step p { color: var(--dim); font-size: 0.9rem; line-height: 1.7; }
+
+    /* ── GAMES ── */
+    #games { background: var(--bg2); }
+    .games-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 24px; margin-top: 52px;
+    }
+    .game-card {
+      background: var(--bg3);
+      border-radius: 14px; padding: 32px 24px;
+      border: 1px solid var(--border);
+      transition: all 0.25s;
+      position: relative; overflow: hidden;
+    }
+    .game-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+    }
+    .game-card:hover {
+      transform: translateY(-6px);
+      border-color: var(--accent);
+      box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+    }
+    .game-card h3 { font-size: 1.15rem; font-weight: 800; margin-bottom: 8px; color: var(--accent); }
+    .game-card .game-mode { font-size: 0.75rem; color: var(--dim); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 16px; }
+    .game-card .controls { list-style: none; }
+    .game-card .controls li {
+      font-size: 0.85rem; color: var(--dim); padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    }
+    .game-card .controls li:last-child { border-bottom: none; }
+    .game-card .controls .gesture { color: var(--white); font-weight: 600; white-space: nowrap; }
+    .game-card .controls .action { text-align: right; }
+    .game-card .voice-hint {
+      margin-top: 16px; padding: 8px 12px;
+      background: rgba(0,0,0,0.3); border-radius: 6px;
+      font-size: 0.8rem; color: var(--dim);
+    }
+    .game-card .voice-hint span { color: var(--cyan); }
+
+    /* ── TECH ── */
+    #tech { background: var(--bg); }
+    .tech-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px; margin-top: 52px;
+    }
+    .tech-pill {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px 16px;
+      text-align: center; transition: all 0.2s;
+    }
+    .tech-pill:hover { border-color: var(--cyan); background: rgba(0,255,255,0.04); }
+    .tech-pill .tech-name { font-size: 0.95rem; font-weight: 700; color: var(--white); display: block; margin-bottom: 4px; }
+    .tech-pill .tech-role { font-size: 0.75rem; color: var(--dim); }
+
+    /* ── SETUP ── */
+    #setup { background: var(--bg2); }
+    .code-block {
+      background: #0b0b16;
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px 32px;
+      margin-top: 32px; font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 0.9rem; line-height: 2;
+      overflow-x: auto;
+    }
+    .code-block .comment { color: var(--dim); }
+    .code-block .cmd { color: var(--cyan); }
+    .code-block .flag { color: var(--purple); }
+
+    /* ── FOOTER ── */
+    footer {
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      padding: 40px 48px;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;
+    }
+    .footer-logo { font-size: 1.2rem; font-weight: 800; color: var(--cyan); letter-spacing: 2px; }
+    .footer-note { color: var(--dim); font-size: 0.85rem; }
+    .footer-badge {
+      font-size: 0.75rem; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 14px; letter-spacing: 1px;
+    }
+
+    /* ── GLOW DIVIDER ── */
+    .glow-line {
+      width: 80px; height: 2px;
+      background: linear-gradient(90deg, var(--cyan), var(--purple));
+      border-radius: 99px; margin-bottom: 32px;
+      box-shadow: 0 0 12px var(--cyan);
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 700px) {
+      nav { padding: 16px 20px; }
+      .nav-links { display: none; }
+      #stats { gap: 40px; padding: 32px 24px; }
+      .problem-grid { grid-template-columns: 1fr; }
+      footer { flex-direction: column; text-align: center; }
+    }
+
+    /* ── SCROLL FADE IN ── */
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .fade-in.visible { opacity: 1; transform: none; }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo">FacePlay</div>
+  <ul class="nav-links">
+    <li><a href="#problem">Problem</a></li>
+    <li><a href="#how">How It Works</a></li>
+    <li><a href="#games">Games</a></li>
+    <li><a href="#tech">Tech</a></li>
+    <li><a href="#setup">Setup</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="hero-tag">Tech(HACK) Valley 2026 &mdash; Software Track</div>
+  <h1 class="hero-title">FacePlay</h1>
+  <p class="hero-sub">
+    A hands-free game controller for hospital patients and anyone who cannot use their hands.
+    No special hardware. Just a webcam.
+  </p>
+  <div class="hero-buttons">
+    <a href="#how" class="btn btn-primary">See How It Works</a>
+    <a href="#setup" class="btn btn-secondary">Run It Locally</a>
+  </div>
+</section>
+
+<!-- STATS -->
+<div id="stats">
+  <div class="stat fade-in">
+    <span class="stat-num">5.4M</span>
+    <span class="stat-label">Americans living with paralysis</span>
+  </div>
+  <div class="stat fade-in">
+    <span class="stat-num">2.5M</span>
+    <span class="stat-label">With arm / hand impairment</span>
+  </div>
+  <div class="stat fade-in">
+    <span class="stat-num">$0</span>
+    <span class="stat-label">Extra hardware needed</span>
+  </div>
+  <div class="stat fade-in">
+    <span class="stat-num">60fps</span>
+    <span class="stat-label">Real-time face tracking</span>
+  </div>
+</div>
+
+<!-- PROBLEM -->
+<section id="problem">
+  <div class="section-inner">
+    <div class="fade-in">
+      <span class="section-tag">The Problem</span>
+      <div class="glow-line"></div>
+      <h2 class="section-title">Gaming is inaccessible for millions of patients.</h2>
+      <p class="section-body">
+        Hospital patients recovering from surgery, stroke, or injury spend weeks unable to use their hands.
+        Gaming is one of the only forms of entertainment available during long stays —
+        yet it remains completely out of reach. Existing solutions cost hundreds of dollars and require caregiver setup.
+      </p>
+    </div>
+    <div class="problem-grid">
+      <div class="problem-card fade-in">
+        <div class="problem-card-icon">&#128065;</div>
+        <h3>Tobii Eye Trackers</h3>
+        <p>Professional eye-tracking devices cost <span class="highlight">$150 to $3,000+</span> per unit. Not found in hospital rooms.</p>
+      </div>
+      <div class="problem-card fade-in">
+        <div class="problem-card-icon">&#129707;</div>
+        <h3>Adaptive Controllers</h3>
+        <p>Require specific accessories, caregiver configuration, and a <span class="highlight">long setup time</span> per patient.</p>
+      </div>
+      <div class="problem-card fade-in">
+        <div class="problem-card-icon">&#128567;</div>
+        <h3>Voice-Only Solutions</h3>
+        <p>Limited to simple commands with <span class="highlight">high latency</span> — not suitable for fast-paced games.</p>
+      </div>
+      <div class="problem-card fade-in">
+        <div class="problem-card-icon">&#128176;</div>
+        <h3>The Cost Barrier</h3>
+        <p>Most hospitals cannot afford per-patient assistive hardware. <span class="highlight">Software-only</span> is the only viable path.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="section-inner">
+    <div class="fade-in">
+      <span class="section-tag">How It Works</span>
+      <div class="glow-line"></div>
+      <h2 class="section-title">Your face is the controller.</h2>
+      <p class="section-body">
+        FacePlay uses computer vision and a trained ML model to read your facial gestures in real time
+        and convert them to keyboard inputs for any game.
+      </p>
+    </div>
+    <div class="steps">
+      <div class="step fade-in">
+        <span class="step-num">01</span>
+        <h3>Webcam Capture</h3>
+        <p>OpenCV reads the camera at 60fps. Every frame is passed to two MediaPipe detectors running simultaneously.</p>
+      </div>
+      <div class="step fade-in">
+        <span class="step-num">02</span>
+        <h3>Face Landmarks</h3>
+        <p>MediaPipe returns 478 precise 3D points across your face every frame — eyes, brows, nose, lips, skull outline.</p>
+      </div>
+      <div class="step fade-in">
+        <span class="step-num">03</span>
+        <h3>Gesture Detection</h3>
+        <p>Eye Aspect Ratio math detects blinks and winks. Custom brow geometry catches eyebrow raises. A scikit-learn classifier identifies head direction.</p>
+      </div>
+      <div class="step fade-in">
+        <span class="step-num">04</span>
+        <h3>Key Injection</h3>
+        <p>Gestures are converted to keyboard inputs and sent directly to the game process using pyautogui and the Windows PostMessageW API.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- GAMES -->
+<section id="games">
+  <div class="section-inner">
+    <div class="fade-in">
+      <span class="section-tag">Games</span>
+      <div class="glow-line"></div>
+      <h2 class="section-title">Four games. Four control schemes. Zero hands.</h2>
+    </div>
+    <div class="games-grid">
+
+      <div class="game-card fade-in" style="--accent: #00ffff;">
+        <h3>Flappy Bird</h3>
+        <div class="game-mode">Mode: Flappy_Bird</div>
+        <ul class="controls">
+          <li><span class="gesture">Blink</span><span class="action">Flap / jump</span></li>
+          <li><span class="gesture">Raise eyebrows</span><span class="action">Flap / jump</span></li>
+        </ul>
+        <div class="voice-hint">Say: <span>"flappy"</span> to launch</div>
+      </div>
+
+      <div class="game-card fade-in" style="--accent: #ff5050;">
+        <h3>Super Mario</h3>
+        <div class="game-mode">Mode: Mario</div>
+        <ul class="controls">
+          <li><span class="gesture">Tilt left / right</span><span class="action">Run</span></li>
+          <li><span class="gesture">Raise eyebrows</span><span class="action">Jump</span></li>
+          <li><span class="gesture">Tilt up + left/right</span><span class="action">Jump diagonal</span></li>
+          <li><span class="gesture">Blink</span><span class="action">Run boost</span></li>
+          <li><span class="gesture">Say "select"</span><span class="action">Confirm / Enter</span></li>
+        </ul>
+        <div class="voice-hint">Say: <span>"mario"</span> to launch</div>
+      </div>
+
+      <div class="game-card fade-in" style="--accent: #50ff80;">
+        <h3>OG Snake</h3>
+        <div class="game-mode">Mode: Snake</div>
+        <ul class="controls">
+          <li><span class="gesture">Tilt head</span><span class="action">Steer</span></li>
+          <li><span class="gesture">Blink</span><span class="action">Dash</span></li>
+          <li><span class="gesture">Hold eyebrows</span><span class="action">Slow motion</span></li>
+        </ul>
+        <div class="voice-hint">Say: <span>"snake"</span> to launch</div>
+      </div>
+
+      <div class="game-card fade-in" style="--accent: #ffdd00;">
+        <h3>Pac-Man</h3>
+        <div class="game-mode">Mode: Pacman</div>
+        <ul class="controls">
+          <li><span class="gesture">Tilt head</span><span class="action">Move direction</span></li>
+          <li><span class="gesture">Hold eyebrows</span><span class="action">Slow ghosts</span></li>
+          <li><span class="gesture">Blink</span><span class="action">Restart on game over</span></li>
+          <li><span class="gesture">Hold blink 3s</span><span class="action">Exit game</span></li>
+        </ul>
+        <div class="voice-hint">Say: <span>"pac man"</span> to launch</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TECH STACK -->
+<section id="tech">
+  <div class="section-inner">
+    <div class="fade-in">
+      <span class="section-tag">Tech Stack</span>
+      <div class="glow-line"></div>
+      <h2 class="section-title">Built with precision, not proprietary hardware.</h2>
+    </div>
+    <div class="tech-grid">
+      <div class="tech-pill fade-in"><span class="tech-name">Python 3.11</span><span class="tech-role">Core language</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">MediaPipe</span><span class="tech-role">Face landmarks</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">OpenCV</span><span class="tech-role">Camera pipeline</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">scikit-learn</span><span class="tech-role">Head direction ML</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">pyautogui</span><span class="tech-role">Key simulation</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">ctypes / User32</span><span class="tech-role">Direct key injection</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">Pygame / SDL</span><span class="tech-role">Game layer</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">Tkinter</span><span class="tech-role">Launcher UI</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">Pillow</span><span class="tech-role">Webcam preview</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">SpeechRecognition</span><span class="tech-role">Voice commands</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">Google STT</span><span class="tech-role">Cloud transcription</span></div>
+      <div class="tech-pill fade-in"><span class="tech-name">NumPy</span><span class="tech-role">Landmark math</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- SETUP -->
+<section id="setup">
+  <div class="section-inner">
+    <div class="fade-in">
+      <span class="section-tag">Get Started</span>
+      <div class="glow-line"></div>
+      <h2 class="section-title">Up and running in under two minutes.</h2>
+      <p class="section-body">Requires Python 3.11, a webcam, and a microphone. No special hardware.</p>
+    </div>
+    <div class="code-block fade-in">
+      <div class="comment"># 1. Create and activate virtual environment</div>
+      <div><span class="cmd">python -m venv .venv</span></div>
+      <div><span class="cmd">.venv\Scripts\activate</span></div>
+      <br>
+      <div class="comment"># 2. Install dependencies</div>
+      <div><span class="cmd">pip install </span><span class="flag">opencv-python mediapipe numpy pyautogui pygame pillow SpeechRecognition scikit-learn</span></div>
+      <br>
+      <div class="comment"># 3. Launch FacePlay</div>
+      <div><span class="cmd">python launcher.py</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">FacePlay</div>
+  <div class="footer-note">Built at Tech(HACK) Valley 2026 &mdash; Georgia Tech Esports</div>
+  <div class="footer-badge">Software Track</div>
+</footer>
+
+<script>
+  // Scroll fade-in
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
