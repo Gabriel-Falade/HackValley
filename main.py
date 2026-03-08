@@ -26,6 +26,20 @@ detector = FaceLandmarker.create_from_options(options)
 WINK_THRESHOLD = 0.12        # lower = more sensitive
 BROW_THRESHOLD = 0.7         # lower = more sensitive
 
+# ── Keybinds ─────────────────────────────────────────   
+ControlMode = "Attack"
+keys = {
+    "Attack" : {
+        "RightWink" : 'x',
+        "LeftWink" : 'c', 
+        "Eyebrow" : 'z'
+    },
+    "Interact" : {
+        "RightWink" : 'e',
+        "Eyebrow" : 'z'
+    }
+}
+
 # ── EAR landmark indices ─────────────────────────────────────────
 LEFT_EAR_IDS  = [33, 159, 158, 133, 153, 145]
 RIGHT_EAR_IDS = [362, 380, 374, 263, 386, 385]
@@ -53,8 +67,14 @@ def EAR(face, ids):
 # ── Camera setup ─────────────────────────────────────────────────
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FPS, 60)
 
+if not cap.isOpened():
+    print("Could not open camera")
+    exit()
 
+print("Running - press Q to quit")
 
 # ── Main loop ────────────────────────────────────────────────────
 while True:
@@ -86,7 +106,9 @@ while True:
         if leftValue < WINK_THRESHOLD and not leftWink:
             leftWink = True
             leftDB = DEBOUNCE_FRAMES
-            pyautogui.press('c')
+            res = keys.get(ControlMode).get("LeftWink")
+            if res:
+                pyautogui.press(res)
             cv2.putText(frame, "LEFT WINK", (20, 170),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
         elif leftWink:
@@ -98,7 +120,9 @@ while True:
         if rightValue < WINK_THRESHOLD and not rightWink:
             rightWink = True
             rightDB = DEBOUNCE_FRAMES
-            pyautogui.press('x')
+            res = keys.get(ControlMode).get("RightWink")
+            if res:
+                pyautogui.press(res)
             cv2.putText(frame, "RIGHT WINK", (20, 200),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
         elif rightWink:
@@ -109,22 +133,24 @@ while True:
         # ── Eyebrow raise → jump (Z) ─────────────────────────────
         if results.face_blendshapes:
             blendshapes = results.face_blendshapes[0]
-            count = sum(
-                1 for shape in blendshapes
-                if shape.category_name in BROW_SHAPES
-                and shape.score > BROW_THRESHOLD
-            )
-            # NEW - debounced, only fires once per raise instead of every frame
-            if count == 3 and not browRaise:
-                browRaise = True
-                browDB = BROW_DEBOUNCE_FRAMES
-                pyautogui.press('z')
-                cv2.putText(frame, "EYEBROW RAISE", (20, 140),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
-            elif browRaise:
-                browDB -= 1
-                if browDB <= 0:
-                    browRaise = False
+            count = 0
+            for c in blendshapes:
+                if c.category_name == 'browInnerUp' and c.score > 0.9:
+                    count += 1
+                if c.category_name == 'browOuterUpLeft' and c.score > 0.9:
+                    count += 1
+                if c.category_name == 'browOuterUpRight' and c.score > 0.9:
+                    count += 1
+            if count == 3:
+                res = keys.get(ControlMode).get("Eyebrow")
+                if res:
+                    pyautogui.keyDown(res)
+            else:
+                res = keys.get(ControlMode).get("Eyebrow")
+                if res:
+                    pyautogui.keyUp(res)
+
+
 
         # ── HUD ──────────────────────────────────────────────────
         cv2.putText(frame, "Face Detected", (20, 40),
