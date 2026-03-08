@@ -22,8 +22,21 @@ options = FaceLandmarkerOptions(
 
 detector = FaceLandmarker.create_from_options(options)
 
+ControlMode = "Attack"
+keys = {
+    "Attack" : {
+        "RightWink" : 'x',
+        "LeftWink" : 'c', 
+        "Eyebrow" : 'z'
+    },
+    "Interact" : {
+        "RightWink" : 'e',
+        "Eyebrow" : 'z'
+    }
+}
 
 WINK_THRESHOLD = 12
+PAUSE_THRESHOLD = 3000 #3 seconds
 
 leftEAR = [33, 159, 158, 133, 153, 145]
 rightEAR = [362, 380, 374, 263, 386, 385]
@@ -32,6 +45,8 @@ leftDB = 5 #in milliseconds
 rightWink = False
 rightDB = 5 #in milliseconds
 
+closed = False
+closedTimer = PAUSE_THRESHOLD
 
 def EAR(face, ids):
     p2p6 = abs(face[ids[1]].y - face[ids[5]].y) #p2 - p6
@@ -67,7 +82,9 @@ while True:
     
         if leftValue < WINK_THRESHOLD and not leftWink:
             leftWink = True
-            pyautogui.press('c') 
+            res = keys.get(ControlMode).get("LeftWink")
+            if res:
+                pyautogui.press(res)
         elif leftWink:
             if leftDB > 0:
                 leftDB -= 1
@@ -77,7 +94,9 @@ while True:
 
         if rightValue < WINK_THRESHOLD and not rightWink:
             rightWink = True
-            pyautogui.press('x') 
+            res = keys.get(ControlMode).get("RightWink")
+            if res:
+                pyautogui.press(res)
         elif rightWink:
             if rightDB > 0:
                 rightDB -= 1
@@ -85,18 +104,30 @@ while True:
                 rightDB = 5
                 rightWink = False
         
+        eyes_closed = rightValue < WINK_THRESHOLD and leftValue < WINK_THRESHOLD
+        if eyes_closed:
+            closedTimer -= 1
+            if closedTimer <= 0:
+                print("PAUSE")
+        else:
+            closedTimer = PAUSE_THRESHOLD
+
         if results.face_blendshapes:
             blendshapes = results.face_blendshapes[0]
             count = 0
             for c in blendshapes:
-                if c.category_name == 'browInnerUp' and c.score > 0.7:
+                if c.category_name == 'browInnerUp' and c.score > 0.9:
                     count += 1
-                if c.category_name == 'browOuterUpLeft' and c.score > 0.7:
+                if c.category_name == 'browOuterUpLeft' and c.score > 0.9:
                     count += 1
-                if c.category_name == 'browOuterUpRight' and c.score > 0.7:
+                if c.category_name == 'browOuterUpRight' and c.score > 0.9:
                     count += 1
             if count == 3:
-                pyautogui.press('z')
+                res = keys.get(ControlMode).get("Eyebrow")
+                if res:
+                    print("jump")
+                    pyautogui.press(res)
+                
 
 
         # Show face detected status
@@ -115,4 +146,4 @@ while True:
 # ── Cleanup ──────────────────────────────────────────────────────
 cap.release()
 cv2.destroyAllWindows()
-face_mesh.close()
+detector.close()
