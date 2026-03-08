@@ -4,9 +4,50 @@ import numpy as np
 import pyautogui
 import time
 import threading
+import queue
 import speech_recognition as sr
 from collections import deque
 import head_model
+import subprocess
+import sys
+import os
+import ctypes
+
+# Send a key directly to a window by title (bypasses focus requirement).
+# Used for Flappy Bird so the space key reaches pygame even when the
+# cv2 calibration window holds keyboard focus.
+_WM_KEYDOWN = 0x0100
+_WM_KEYUP   = 0x0101
+_VK_SPACE   = 0x20
+_VK_RETURN  = 0x0D
+
+def _post_key_to_window(window_title, vk_code):
+    """PostMessageW a keydown+keyup directly to the target window handle."""
+    if sys.platform != 'win32':
+        return
+    hwnd = ctypes.windll.user32.FindWindowW(None, window_title)
+    if hwnd:
+        ctypes.windll.user32.PostMessageW(hwnd, _WM_KEYDOWN, vk_code, 0)
+        ctypes.windll.user32.PostMessageW(hwnd, _WM_KEYUP,   vk_code, 0)
+
+def _post_key_partial(partial_title, vk_code):
+    """Find a window whose title contains partial_title, post the key directly to it."""
+    if sys.platform != 'win32':
+        return
+    found = []
+    def _cb(hwnd, _):
+        n = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        if n > 0:
+            buf = ctypes.create_unicode_buffer(n + 1)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buf, n + 1)
+            if partial_title.lower() in buf.value.lower():
+                found.append(hwnd)
+        return True
+    _EP = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_size_t, ctypes.c_size_t)
+    ctypes.windll.user32.EnumWindows(_EP(_cb), 0)
+    if found:
+        ctypes.windll.user32.PostMessageW(found[0], _WM_KEYDOWN, vk_code, 0)
+        ctypes.windll.user32.PostMessageW(found[0], _WM_KEYUP,   vk_code, 0)
 
 # ═══════════════════════════════════════════════════════════════════
 #  FacePlay — Hands-free game controller
@@ -25,8 +66,8 @@ pyautogui.FAILSAFE = False  # disable the move-to-corner kill switch
 # ═══════════════════════════════════════════════════════════════════
 
 # ── Camera ───────────────────────────────────────────────────────
-CAM_WIDTH  = 640
-CAM_HEIGHT = 480
+CAM_WIDTH  = 640 
+CAM_HEIGHT = 480 
 CAM_FPS    = 60
 
 # ── Startup calibration ──────────────────────────────────────────
@@ -34,13 +75,28 @@ CALIB_DURATION    = 2.0   # seconds to collect baseline face data
 WINK_CALIB_RATIO  = 0.75  # wink threshold = this fraction of neutral EAR
 
 # ── Wink / blink (EAR) ───────────────────────────────────────────
-WINK_THRESHOLD   = 0.12  # fallback if calibration finds no face
+WINK_THRESHOLD       = 0.12  # fallback full-blink threshold
+LEFT_WINK_THRESHOLD  = 0.12  # fallback left-wink threshold (calibrated separately)
+RIGHT_WINK_THRESHOLD = 0.12  # fallback right-wink threshold (calibrated separately)
 # CHANGED: replaced DEBOUNCE_FRAMES (frame-count) with WINK_DEBOUNCE_SEC (seconds).
 # Frame counting is unreliable because FPS varies — at 30 fps, 5 frames = 167 ms;
 # at 60 fps, 5 frames = 83 ms. A fixed time value gives consistent feel regardless
 # of camera speed. 0.25 s means the key can fire at most 4 times per second,
 # and a single closed eye never re-fires while still shut.
 WINK_DEBOUNCE_SEC = 0.25  # seconds to lock out after a wink/blink fires
+
+# ── Flappy Bird — strict flap debounce ──────────────────────────
+# Flappy Bird is instant-death on a misfire.  This is double the normal
+# wink debounce (0.25 s) so one eyebrow raise can never register twice.
+# Raise this value if a slow raise still double-fires; lower it only
+# if the control starts to feel laggy during rapid tapping sequences.
+FLAPPY_BIRD_DEBOUNCE_SEC = 0.5
+
+# ── Space Invaders — shoot repeat interval ────────────────────────
+# While the eyebrow is held, the shoot key fires every this many ms.
+# 150 ms ≈ 6-7 shots/second — rapid fire without fatigue.
+# Lower = faster; raise if accidental double-shots occur.
+SHOOT_REPEAT_INTERVAL_MS = 150
 
 # ── Eyebrow landmark geometry ────────────────────────────────────
 BROW_YAW_THRESHOLD    = 8     # degrees of yaw to count as "turned"
@@ -99,28 +155,82 @@ DEBUG_MODE = False
 # ═══════════════════════════════════════════════════════════════════
 #  KEY MAPPINGS
 # ═══════════════════════════════════════════════════════════════════
-# CHANGED: "RightWink" renamed to "Blink" — attack now requires both eyes.
-# CHANGED: Interact eyebrow mapped to 'i' (inventory, single press).
-#          Attack eyebrow mapped to 'z' (jump, held key).
 keys = {
+    # ── ATTACK MODE (Donkey Kong, Snake, OG Snake) ─────────────────
+    # All three games share the same key layout: arrows to move,
+    # X = primary action, C = secondary, Z = hold/shield.
     "Attack": {
-        "Blink":    'x',  # full blink (both eyes)  → attack
-        "LeftWink": 'c',  # left wink only          → dash
-        "Eyebrow":  'z',  # eyebrow raise           → hold jump
+        "Blink":     'x',   # DK: jump tap | Snake: dash burst
+        "LeftWink":  'c',   # Snake/OG: bonus food spawn
+        "RightWink": 'v',   # unmapped — available for future use
+        "Eyebrow":   'z',   # DK: hold jump | Snake: hold shield/slow-mo
     },
+
+    # ── PACMAN MODE ────────────────────────────────────────────────
+    # Head arrows = direction. Eyebrow hold = slow ghosts (Z key).
+    # Blink = restart after game over (X key).
+    "Pacman": {
+        "Blink":    'x',   # restart on game-over screen
+        "Eyebrow":  'z',   # hold to slow all ghosts
+    },
+
+    # ── INTERACT MODE (WASD games) ─────────────────────────────────
     "Interact": {
-        "Blink":   'e',   # full blink → interact / confirm
-        "Eyebrow": 'i',   # eyebrow raise → press inventory (single press, not hold)
-        # LeftWink intentionally absent in Interact mode
-    }
+        "Blink":     'e',   # full blink → interact / confirm
+        "LeftWink":  'c',   # left wink  → dash
+        "RightWink": 'v',   # right wink → special
+        "Eyebrow":   'i',   # eyebrow raise → inventory (single press)
+    },
+
+    # ── MARIO MODE (Super Mario Python) ───────────────────────────
+    # LEFT/RIGHT arrows = run left/right.
+    # Eyebrow hold = SPACE (jump — variable height via hold duration).
+    # Blink = LEFT SHIFT (run boost for speed).
+    # LeftWink = ESCAPE (pause/unpause).
+    # HEAD UP fires 'up' arrow which also triggers jump — intentional
+    # (useful for entering pipes and climbing vines).
+    "Mario": {
+        "Blink":     'shift',   # run / speed boost (left shift)
+        "LeftWink":  'escape',  # pause / unpause
+        "RightWink": 'return',  # menu confirm / start level
+        "Eyebrow":   'space',   # jump (hold = tall jump, fast flick = short hop)
+    },
+
+    # ── FLAPPY BIRD MODE ─────────────────────────────────────────
+    # One-button game: blink OR eyebrow raise → SPACE (flap).
+    # Head movement is DISABLED in this mode (UP arrow also flaps
+    # in the game so accidental head tilts would kill the run).
+    "Flappy_Bird": {
+        "Blink":   'space',   # blink → flap
+        "Eyebrow": 'space',   # eyebrow raise → flap (single instant press)
+    },
+
+    # ── SNAKE MODE ───────────────────────────────────────────────
+    # Head tilt steers the snake. Arrow keys only — no diagonal.
+    "Snake": {
+        "Blink":     'x',   # dash burst
+        "LeftWink":  'c',   # bonus food spawn
+        "Eyebrow":   'z',   # hold slow-mo / shield
+    },
+
+    # ── SPACE INVADERS MODE ──────────────────────────────────────
+    # HEAD LEFT/RIGHT = move ship. Eyebrow hold = shoot (repeat).
+    # Blink = RETURN (start game from menu / pause mid-game).
+    "Space_Invaders": {
+        "Blink":   'return',  # start game on menu / pause
+        "Eyebrow": 'space',   # hold brows = shoot laser (repeating)
+    },
 }
 
-# Head movement keys differ per mode.
-# Attack  → arrow keys (Hollow Knight)
-# Interact → WASD     (Stardew / Undertale)
 head_keys = {
-    "Attack"  : {"left": "left", "right": "right", "up": "up",  "down": "down"},
-    "Interact": {"left": "a",    "right": "d",      "up": "w",   "down": "s"}
+    "Attack"        : {"left": "left", "right": "right", "up": "up",  "down": "down"},
+    "Snake"         : {"left": "left", "right": "right", "up": "up",  "down": "down"},
+    "Pacman"        : {"left": "left", "right": "right", "up": "up",  "down": "down"},
+    "Interact"      : {"left": "a",    "right": "d",      "up": "w",   "down": "s"},
+    "Mario"         : {"left": "left", "right": "right", "up": "up",  "down": "down"},
+    # Flappy Bird: head movement intentionally not used — see main loop guard.
+    "Flappy_Bird"   : {"left": "left", "right": "right", "up": "up",  "down": "down"},
+    "Space_Invaders": {"left": "left", "right": "right", "up": "up",  "down": "down"},
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -170,6 +280,35 @@ _LEFT_DIRS  = frozenset({"LEFT"})
 _RIGHT_DIRS = frozenset({"RIGHT"})
 _DIAGONALS  = frozenset({"UP_LEFT", "UP_RIGHT", "DOWN_LEFT", "DOWN_RIGHT"})
 
+# ── Modes that use eyebrow HOLD (keyDown/keyUp) ──────────────────
+# All other modes use eyebrow PRESS (single tap).
+# Space_Invaders has its own repeat-fire logic but also uses hold state.
+_BROW_HOLD_MODES = frozenset({"Attack", "Snake", "Mario", "Pacman", "Space_Invaders"})
+
+# ── HUD label shown while brow is actively held ──────────────────
+_BROW_ACTIVE_LABEL = {
+    "Attack":         "JUMPING / SHIELD",
+    "Snake":          "SLOW-MO",
+    "Pacman":         "SLOW GHOSTS",
+    "Mario":          "JUMPING",
+    "Flappy_Bird":    "FLAPPING",
+    "Space_Invaders": "SHOOTING",
+    "Interact":       "INVENTORY",
+}
+
+# ── Direction mirror map ──────────────────────────────────────────
+# The head model was trained with the camera flipped, but the flipped
+# landmark coordinates cause LEFT↔RIGHT to be inverted at runtime.
+# Swap them here so turning right moves the character right.
+_DIR_MIRROR = {
+    "LEFT":       "RIGHT",
+    "RIGHT":      "LEFT",
+    "UP_LEFT":    "UP_RIGHT",
+    "UP_RIGHT":   "UP_LEFT",
+    "DOWN_LEFT":  "DOWN_RIGHT",
+    "DOWN_RIGHT": "DOWN_LEFT",
+}
+
 # ═══════════════════════════════════════════════════════════════════
 #  CAMERA SETUP
 # ═══════════════════════════════════════════════════════════════════
@@ -200,6 +339,7 @@ is_paused   = False     # True while the game is paused
 # allowed to fire again. 0.0 means "ready now". No frame counting needed.
 leftWinkUntil  = 0.0
 rightWinkUntil = 0.0
+blink_hold_start = None   # wall-clock time when sustained blink began (for hold-to-exit)
 
 # ── Eyebrow hold state ───────────────────────────────────────────
 last_brow_state    = False  # True while jump key is held down (Attack mode only)
@@ -211,6 +351,19 @@ prev_brow_ratio    = 0.0
 # Tracks whether a short-hop timed press is currently in flight.
 # Stores the time.time() when the key should be released, or 0 if idle.
 short_hop_release_at = 0.0
+
+# ── Flappy Bird flap debounce ─────────────────────────────────────
+# Timestamp after which the next flap is allowed.  0.0 = ready now.
+# Separate from wink debounce so FLAPPY_BIRD_DEBOUNCE_SEC can be tuned
+# independently without touching any other mode.
+flappy_brow_until = 0.0
+
+# ── Space Invaders shoot repeat ───────────────────────────────────
+# Timestamp for the next scheduled shoot-key press.
+# Set to time.time() on the frame the eyebrow enters shoot state so
+# the first shot fires immediately; subsequent shots fire every
+# SHOOT_REPEAT_INTERVAL_MS milliseconds while the brow stays raised.
+shoot_next_fire_at = 0.0
 
 # ── Head movement ────────────────────────────────────────────────
 direction_buffer = deque(maxlen=4)  # kept for import; no longer used for UP/DOWN
@@ -363,8 +516,247 @@ def release_all_keys():
     Called on mode switch, face loss, pause, and quit.
     Covers both Arrow and WASD sets so nothing gets stuck on mode change.
     """
-    for key in ("left", "right", "up", "down", "a", "d", "w", "s", "z"):
+    for key in ("left", "right", "up", "down", "a", "d", "w", "s",
+                "z", "x", "space", "shift", "return", "escape"):
         pyautogui.keyUp(key)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  GAME LAUNCHER  (shown in the FacePlay window after calibration)
+# ═══════════════════════════════════════════════════════════════════
+
+_GAMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Games")
+
+LAUNCHER_GAMES = [
+    {
+        "name": "Snake",        "desc": "Smooth snake",
+        "mode": "Attack",       "color": (80, 200, 80),
+        "cmd": [sys.executable, os.path.join(_GAMES_DIR, "snake.py")],
+        "cwd": _GAMES_DIR,
+    },
+    {
+        "name": "OG Snake",     "desc": "Retro pixel snake",
+        "mode": "Attack",       "color": (100, 230, 160),
+        "cmd": [sys.executable, os.path.join(_GAMES_DIR, "og-snake.py")],
+        "cwd": _GAMES_DIR,
+    },
+    {
+        "name": "Pac-Man",      "desc": "Eat dots, dodge ghosts",
+        "mode": "Pacman",       "color": (0, 220, 255),
+        "cmd": [sys.executable, os.path.join(_GAMES_DIR, "PacMan", "pacman.py")],
+        "cwd": os.path.join(_GAMES_DIR, "PacMan"),
+    },
+    {
+        "name": "Donkey Kong",  "desc": "Climb to save Pauline",
+        "mode": "Attack",       "color": (30, 120, 255),
+        "cmd": [sys.executable,
+                os.path.join(_GAMES_DIR, "Basic-OOP-Donkey-Kong-in-Python", "mario_barrel.py")],
+        "cwd": os.path.join(_GAMES_DIR, "Basic-OOP-Donkey-Kong-in-Python"),
+    },
+    {
+        "name": "Flappy Bird",  "desc": "Raise brows to flap",
+        "mode": "Flappy_Bird",  "color": (255, 180, 80),
+        "cmd": [sys.executable, os.path.join(_GAMES_DIR, "Flappy-bird-python", "flappy.py")],
+        "cwd": os.path.join(_GAMES_DIR, "Flappy-bird-python"),
+    },
+    {
+        "name": "Space Invaders","desc": "Hold brows to shoot",
+        "mode": "Space_Invaders","color": (255, 80, 200),
+        "cmd": [sys.executable, os.path.join(_GAMES_DIR, "space-invaders", "spaceinvaders.py")],
+        "cwd": os.path.join(_GAMES_DIR, "space-invaders"),
+    },
+    {
+        "name": "Super Mario",  "desc": "Run, jump, collect",
+        "mode": "Mario",        "color": (60, 60, 255),
+        "cmd": [sys.executable, os.path.join(_GAMES_DIR, "super-mario-python", "main.py")],
+        "cwd": os.path.join(_GAMES_DIR, "super-mario-python"),
+    },
+]
+
+
+# ── Voice → game index map (checked with 'in', order matters for substrings) ──
+_LAUNCHER_VOICE_MAP = [
+    ("og snake",       1),
+    ("retro",          1),
+    ("donkey kong",    3),
+    ("donkey",         3),
+    ("pac man",        2),
+    ("pacman",         2),
+    ("pac-man",        2),
+    ("flappy bird",    4),
+    ("flappy",         4),
+    ("space invaders", 5),
+    ("invaders",       5),
+    ("super mario",    6),
+    ("mario",          6),
+    ("snake",          0),
+    ("space",          5),
+]
+
+
+def _run_launcher():
+    """
+    FacePlay in-window game launcher — runs after calibration.
+
+    Face gestures:
+      HEAD RIGHT / LEFT  — cycle to next / previous game
+      BLINK (both eyes)  — launch selected game
+      EYEBROW RAISE      — also launches (alternate gesture)
+
+    Voice:
+      Say a game name ("pac man", "mario", "snake", etc.) to launch directly.
+
+    Keyboard fallback (for testing without webcam):
+      LEFT / RIGHT or A / D — cycle
+      SPACE or ENTER        — launch
+      Q / ESC               — quit without launching
+
+    Returns the selected game dict so the caller can auto-set ControlMode,
+    or None if the user quit.
+    """
+    selected = 0
+    n        = len(LAUNCHER_GAMES)
+
+    # ── Voice selection thread ─────────────────────────────────────
+    _voice_q: queue.Queue = queue.Queue()
+
+    def _launcher_voice():
+        lsr = sr.Recognizer()
+        lsr.energy_threshold         = 300
+        lsr.pause_threshold          = 0.5
+        lsr.dynamic_energy_threshold = False
+        try:
+            with sr.Microphone() as src:
+                lsr.adjust_for_ambient_noise(src, duration=0.5)
+        except Exception:
+            return
+        while _voice_q.empty():   # stop once a game is selected
+            try:
+                with sr.Microphone() as src:
+                    try:
+                        audio = lsr.listen(src, timeout=3, phrase_time_limit=3)
+                    except sr.WaitTimeoutError:
+                        continue
+                text = lsr.recognize_google(audio).lower()
+                print(f"Launcher voice: {text}")
+                for phrase, idx in _LAUNCHER_VOICE_MAP:
+                    if phrase in text:
+                        _voice_q.put(idx)
+                        break
+            except sr.UnknownValueError:
+                pass
+            except Exception as e:
+                print(f"Launcher voice error: {e}")
+                time.sleep(0.5)
+
+    threading.Thread(target=_launcher_voice, daemon=True).start()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        frame   = cv2.flip(frame, 1)
+        img_h, img_w = frame.shape[:2]
+        now     = time.time()
+
+        # ── Launch on voice command ────────────────────────────────
+        if not _voice_q.empty():
+            idx = _voice_q.get()
+            g   = LAUNCHER_GAMES[idx]
+            g["proc"] = subprocess.Popen(g["cmd"], cwd=g["cwd"])
+            print(f"FacePlay Launcher (voice): launching '{g['name']}' → mode {g['mode']}")
+            return g
+
+        # ── Draw HUD ───────────────────────────────────────────────
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (img_w, img_h), (8, 8, 18), -1)
+        cv2.addWeighted(overlay, 0.60, frame, 0.40, 0, frame)
+
+        # Title
+        cv2.putText(frame, "FacePlay",
+                    (img_w // 2 - 108, 52),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+        cv2.putText(frame, "Say the game name to launch   e.g. \"pac man\", \"mario\", \"snake\"",
+                    (img_w // 2 - 275, 82),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, (150, 150, 175), 1)
+
+        # Cards
+        card_w, card_h = 168, 152
+        gap  = 186
+        cx   = img_w // 2
+        cy   = img_h // 2
+
+        for offset in range(-2, 3):
+            idx = selected + offset
+            if not (0 <= idx < n):
+                continue
+            g      = LAUNCHER_GAMES[idx]
+            color  = g["color"]          # BGR tuple
+            is_sel = (idx == selected)
+            sx     = cx + offset * gap - card_w // 2
+            sy     = cy - card_h // 2 - (18 if is_sel else 0)
+
+            # Card background
+            bg = frame.copy()
+            cv2.rectangle(bg, (sx, sy), (sx + card_w, sy + card_h), (22, 22, 38), -1)
+            cv2.addWeighted(bg, 0.75 if is_sel else 0.45, frame,
+                            0.25 if is_sel else 0.55, 0, frame)
+
+            # Border
+            cv2.rectangle(frame, (sx, sy), (sx + card_w, sy + card_h),
+                          color if is_sel else (65, 65, 95),
+                          3 if is_sel else 1)
+
+            # Game name
+            ts  = 0.56 if is_sel else 0.45
+            tc  = color if is_sel else (130, 130, 130)
+            tw  = cv2.getTextSize(g["name"], cv2.FONT_HERSHEY_SIMPLEX, ts, 2)[0][0]
+            cv2.putText(frame, g["name"],
+                        (sx + card_w // 2 - tw // 2, sy + 42),
+                        cv2.FONT_HERSHEY_SIMPLEX, ts, tc, 2 if is_sel else 1)
+
+            # Description
+            dw = cv2.getTextSize(g["desc"], cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)[0][0]
+            cv2.putText(frame, g["desc"],
+                        (sx + card_w // 2 - dw // 2, sy + 74),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35,
+                        (185, 185, 185) if is_sel else (85, 85, 85), 1)
+
+            # FacePlay mode badge
+            mw = cv2.getTextSize(g["mode"], cv2.FONT_HERSHEY_SIMPLEX, 0.31, 1)[0][0]
+            cv2.putText(frame, g["mode"],
+                        (sx + card_w // 2 - mw // 2, sy + 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.31,
+                        color if is_sel else (75, 75, 75), 1)
+
+            if is_sel:
+                lbl = "[ SAY TO LAUNCH ]"
+                lw  = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)[0][0]
+                cv2.putText(frame, lbl,
+                            (sx + card_w // 2 - lw // 2, sy + card_h - 12),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.33, color, 1)
+
+        # Navigation arrows
+        if selected > 0:
+            pts = np.array([[28, cy], [52, cy - 16], [52, cy + 16]], np.int32)
+            cv2.fillPoly(frame, [pts], (180, 180, 210))
+        if selected < n - 1:
+            pts = np.array([[img_w - 28, cy], [img_w - 52, cy - 16],
+                            [img_w - 52, cy + 16]], np.int32)
+            cv2.fillPoly(frame, [pts], (180, 180, 210))
+
+        # Counter
+        ctr = f"{selected + 1} / {n}"
+        ctw = cv2.getTextSize(ctr, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][0]
+        cv2.putText(frame, ctr, (img_w // 2 - ctw // 2, img_h - 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (130, 130, 155), 1)
+
+        cv2.imshow("FacePlay", frame)
+
+        # ── Keyboard fallback (Q / ESC to quit) ───────────────────
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord('q'), 27):
+            return None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -381,7 +773,7 @@ def speech_thread_fn():
     r.pause_threshold          = 0.5    # seconds of silence = phrase end
     r.dynamic_energy_threshold = False  # no auto-adjust (can cause missed words)
 
-    key_phrases = ["pause", "resume", "fight", "interact"]
+    key_phrases = ["pause", "resume", "fight", "interact", "mario", "flappy", "space", "invaders", "select"]
     last_said   = ""
 
     try:
@@ -407,15 +799,23 @@ def speech_thread_fn():
             if "pause" in text and last_said != "pause":
                 with state_lock:
                     is_paused = True
-                pyautogui.press('escape')
+                    _mode = ControlMode
+                # Space Invaders: ESC quits the game — skip; Flappy Bird: no pause
+                if _mode not in ("Space_Invaders", "Flappy_Bird"):
+                    pyautogui.press('escape')
                 last_said = "pause"
 
             elif "resume" in text and last_said != "resume":
-                # CHANGED: is_paused set to False (original had no is_paused)
                 with state_lock:
                     is_paused = False
-                pyautogui.press('escape')
+                    _mode = ControlMode
+                if _mode not in ("Space_Invaders", "Flappy_Bird"):
+                    pyautogui.press('escape')
                 last_said = "resume"
+
+            elif "select" in text:
+                _post_key_partial("super mario", _VK_RETURN)
+                print("COMMAND: select → Enter")
 
             elif "fight" in text:
                 with state_lock:
@@ -428,6 +828,24 @@ def speech_thread_fn():
                     ControlMode = "Interact"
                 release_all_keys()
                 print("COMMAND: switched to Interact mode")
+
+            elif "mario" in text:
+                with state_lock:
+                    ControlMode = "Mario"
+                release_all_keys()
+                print("COMMAND: switched to Mario mode")
+
+            elif "flappy" in text:
+                with state_lock:
+                    ControlMode = "Flappy_Bird"
+                release_all_keys()
+                print("COMMAND: switched to Flappy Bird mode")
+
+            elif "space" in text or "invaders" in text:
+                with state_lock:
+                    ControlMode = "Space_Invaders"
+                release_all_keys()
+                print("COMMAND: switched to Space Invaders mode")
 
         except sr.UnknownValueError:
             pass   # could not understand — ignore quietly
@@ -448,104 +866,148 @@ speech_thread.start()
 # the user's neutral face data. Computes personalised EAR and brow
 # thresholds from their baseline so the controller works for any face.
 
-ear_samples  = []
-brow_samples = []
-calib_start  = time.time()
+# ═══════════════════════════════════════════════════════════════════
+#  GUIDED 5-STEP CALIBRATION
+#  Step 1 — Neutral (2 s):      baseline EAR + brow ratio
+#  Step 2 — Blink both (1.5 s): both eyes closed → full-blink threshold
+#  Step 3 — Left wink (1.5 s):  only left eye closed → left-wink threshold
+#  Step 4 — Right wink (1.5 s): only right eye closed → right-wink threshold
+#  Step 5 — Raise brows (1.5 s): brows up → brow-raise threshold
+#
+#  Each threshold is set to the midpoint between the neutral value and the
+#  minimum observed during that gesture step, so it is personalised to the
+#  user's own facial geometry.
+# ═══════════════════════════════════════════════════════════════════
 
-print("FacePlay: calibrating to your face — please look at the camera.")
+def _run_calib_step(cap, detector, duration, title, subtitle, color):
+    """Collect face data for `duration` seconds while showing the given HUD."""
+    l_ears, r_ears, brows = [], [], []
+    step_start = time.time()
+    while time.time() - step_start < duration:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb.flags.writeable = False
+        try:
+            ts = int(time.time() * 1000)
+            res = detector.detect_for_video(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
+            if res.face_landmarks:
+                face = res.face_landmarks[0]
+                l_ears.append(EAR(face, LEFT_EAR_IDS))
+                r_ears.append(EAR(face, RIGHT_EAR_IDS))
+                brows.append(get_brow_raise(face))
+        except Exception:
+            pass
+        remaining = max(0.0, duration - (time.time() - step_start))
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (40, 110), (600, 380), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        cv2.putText(frame, title,
+                    (60, 185), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+        cv2.putText(frame, subtitle,
+                    (60, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (190, 190, 190), 1)
+        cv2.putText(frame, f"{remaining:.1f}s",
+                    (280, 320), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2)
+        cv2.imshow("FacePlay", frame)
+        cv2.waitKey(1)
+    return l_ears, r_ears, brows
 
-while time.time() - calib_start < CALIB_DURATION:
-    ret, frame = cap.read()
-    if not ret:
-        continue
 
-    frame  = cv2.flip(frame, 1)
-    img_h, img_w = frame.shape[:2]
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    rgb_frame.flags.writeable = False
+def _show_ready(cap, message, duration=1.0):
+    """Show a brief confirmation screen between calibration steps."""
+    t0 = time.time()
+    while time.time() - t0 < duration:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        frame = cv2.flip(frame, 1)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (50, 150), (590, 330), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        cv2.putText(frame, message,
+                    (80, 250), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 210, 120), 2)
+        cv2.imshow("FacePlay", frame)
+        cv2.waitKey(1)
 
-    # Run FaceLandmarker to collect baseline samples
-    try:
-        ts         = int(time.time() * 1000)
-        fl_results = detector.detect_for_video(
-            mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame), ts)
 
-        if fl_results.face_landmarks:
-            face  = fl_results.face_landmarks[0]
-            l_ear = EAR(face, LEFT_EAR_IDS)
-            r_ear = EAR(face, RIGHT_EAR_IDS)
-            ear_samples.append((l_ear + r_ear) / 2.0)
+print("FacePlay: starting guided calibration.")
 
-            brow_samples.append(get_brow_raise(face))
-    except Exception:
-        pass  # skip bad frames silently during calibration
+# ── Step 1: Neutral ───────────────────────────────────────────────
+_show_ready(cap, "STEP 1/5 — Look straight ahead", duration=1.2)
+l_n, r_n, b_n = _run_calib_step(
+    cap, detector, CALIB_DURATION,
+    "NEUTRAL — look straight ahead",
+    "Relax your face naturally",
+    (255, 255, 255))
 
-    # ── Welcome screen HUD ───────────────────────────────────────
-    remaining = max(0.0, CALIB_DURATION - (time.time() - calib_start))
+neutral_l_ear = sum(l_n) / len(l_n) if l_n else 0.20
+neutral_r_ear = sum(r_n) / len(r_n) if r_n else 0.20
+neutral_ear   = (neutral_l_ear + neutral_r_ear) / 2.0
+neutral_brow  = sum(b_n) / len(b_n) if b_n else 0.35
 
-    # Semi-transparent dark panel so text is readable over any background
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (50, 130), (590, 360), (20, 20, 20), -1)
-    cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
+# ── Step 2: Full blink ────────────────────────────────────────────
+_show_ready(cap, "STEP 2/5 — Get ready to BLINK", duration=1.0)
+l_blink, r_blink, _ = _run_calib_step(
+    cap, detector, 1.5,
+    "BLINK — close BOTH eyes",
+    "Blink repeatedly with both eyes",
+    (0, 200, 255))
 
-    cv2.putText(frame, "Welcome to FacePlay",
-                (90, 195), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2)
-    cv2.putText(frame, "Sit comfortably and look at the camera",
-                (62, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (190, 190, 190), 1)
-    cv2.putText(frame, f"Calibrating  {remaining:.1f}s",
-                (195, 310), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 210, 120), 2)
+blink_l_min = min(l_blink) if l_blink else 0.0
+blink_r_min = min(r_blink) if r_blink else 0.0
+WINK_THRESHOLD = (neutral_ear + (blink_l_min + blink_r_min) / 2.0) / 2.0
 
-    cv2.imshow("FacePlay", frame)
-    cv2.waitKey(1)
+# ── Step 3: Left wink ─────────────────────────────────────────────
+_show_ready(cap, "STEP 3/5 — Get ready to wink LEFT", duration=1.0)
+l_lwink, r_lwink, _ = _run_calib_step(
+    cap, detector, 1.5,
+    "LEFT WINK — close LEFT eye only",
+    "Wink your left eye repeatedly",
+    (80, 255, 80))
 
-# ── Compute personalised thresholds from collected samples ───────
-if ear_samples:
-    neutral_ear    = sum(ear_samples) / len(ear_samples)
-    WINK_THRESHOLD = neutral_ear * WINK_CALIB_RATIO
-    print(f"Calibration: neutral EAR={neutral_ear:.3f}  "
-          f"→ wink threshold={WINK_THRESHOLD:.3f}")
-else:
-    print("Calibration: no face found — using default wink threshold "
-          f"({WINK_THRESHOLD})")
+lwink_l_min = min(l_lwink) if l_lwink else 0.0
+LEFT_WINK_THRESHOLD = (neutral_l_ear + lwink_l_min) / 2.0
 
-if brow_samples:
-    neutral_brow           = sum(brow_samples) / len(brow_samples)
-    # Personalise thresholds as multiples of the neutral geometry ratio.
-    # Trigger = 25 % above neutral; release = 10 % above neutral.
-    # The gap between the two gives asymmetric hysteresis so keyUp fires
-    # well before the brows fully relax (eliminating hold-on-release delay).
-    # Turned variants add a fixed +0.07 to the trigger (stricter when
-    # the head is rotated because geometry shifts upward slightly).
-    BROW_TRIGGER_THRESHOLD = neutral_brow * BROW_TRIGGER_MULTIPLIER
-    BROW_RELEASE_THRESHOLD = neutral_brow * BROW_RELEASE_MULTIPLIER
-    BROW_TRIGGER_TURNED    = BROW_TRIGGER_THRESHOLD + 0.07
-    BROW_RELEASE_TURNED    = BROW_TRIGGER_TURNED - 0.035
-    print(f"Calibration: neutral brow ratio={neutral_brow:.3f}  "
-          f"→ trigger={BROW_TRIGGER_THRESHOLD:.3f} / release={BROW_RELEASE_THRESHOLD:.3f} "
-          f"(turned: {BROW_TRIGGER_TURNED:.3f} / {BROW_RELEASE_TURNED:.3f})")
-else:
-    print("Calibration: no face found — using default brow thresholds "
-          f"(trigger={BROW_TRIGGER_THRESHOLD} / release={BROW_RELEASE_THRESHOLD})")
+# ── Step 4: Right wink ───────────────────────────────────────────
+_show_ready(cap, "STEP 4/5 — Get ready to wink RIGHT", duration=1.0)
+l_rwink, r_rwink, _ = _run_calib_step(
+    cap, detector, 1.5,
+    "RIGHT WINK — close RIGHT eye only",
+    "Wink your right eye repeatedly",
+    (80, 180, 255))
 
-# ── Show "Calibrated!" confirmation for 1 second ─────────────────
-confirm_start = time.time()
-while time.time() - confirm_start < 1.0:
-    ret, frame = cap.read()
-    if not ret:
-        continue
-    frame = cv2.flip(frame, 1)
+rwink_r_min = min(r_rwink) if r_rwink else 0.0
+RIGHT_WINK_THRESHOLD = (neutral_r_ear + rwink_r_min) / 2.0
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (50, 150), (590, 330), (20, 20, 20), -1)
-    cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
+# ── Step 5: Eyebrow raise ─────────────────────────────────────────
+_show_ready(cap, "STEP 5/5 — Get ready to raise EYEBROWS", duration=1.0)
+_, _, b_raise = _run_calib_step(
+    cap, detector, 1.5,
+    "EYEBROWS — raise both brows",
+    "Raise your eyebrows as high as you can",
+    (255, 180, 0))
 
-    cv2.putText(frame, "Calibrated!",
-                (175, 225), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 210, 120), 3)
-    cv2.putText(frame, "Starting in Attack Mode",
-                (130, 278), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (190, 190, 190), 2)
+brow_max = max(b_raise) if b_raise else neutral_brow * 1.4
+# Trigger = midpoint between neutral and the peak raise observed.
+# Release = slightly below trigger for comfortable hysteresis.
+BROW_TRIGGER_THRESHOLD = (neutral_brow + brow_max) / 2.0
+BROW_RELEASE_THRESHOLD = neutral_brow * BROW_RELEASE_MULTIPLIER
+BROW_TRIGGER_TURNED    = BROW_TRIGGER_THRESHOLD + 0.07
+BROW_RELEASE_TURNED    = BROW_TRIGGER_TURNED - 0.035
 
-    cv2.imshow("FacePlay", frame)
-    cv2.waitKey(1)
+# ── Print summary ─────────────────────────────────────────────────
+print(f"Calibration done:"
+      f"\n  neutral EAR   L={neutral_l_ear:.3f}  R={neutral_r_ear:.3f}"
+      f"\n  blink thr     {WINK_THRESHOLD:.3f}"
+      f"\n  left-wink thr {LEFT_WINK_THRESHOLD:.3f}"
+      f"\n  right-wink thr{RIGHT_WINK_THRESHOLD:.3f}"
+      f"\n  brow trigger  {BROW_TRIGGER_THRESHOLD:.3f}  release {BROW_RELEASE_THRESHOLD:.3f}")
+
+# ── Confirmation ──────────────────────────────────────────────────
+_show_ready(cap, "Calibrated!  Starting FacePlay...", duration=1.5)
 
 # ── Load ML head-direction model ─────────────────────────────────
 try:
@@ -554,7 +1016,31 @@ except FileNotFoundError as e:
     print(e)
     print("FacePlay: no head_model.pkl — head movement will be disabled.")
 
-print("FacePlay: entering main loop — press Q to quit.")
+# ── Game launcher ─────────────────────────────────────────────────
+# When launched by launcher.py via --skip-launcher --mode <mode>,
+# skip the in-built OpenCV launcher and go straight to face control.
+_ext_mode = None
+if "--skip-launcher" in sys.argv:
+    try:
+        _ext_mode = sys.argv[sys.argv.index("--mode") + 1]
+    except (ValueError, IndexError):
+        _ext_mode = "Attack"
+
+if _ext_mode:
+    _launched_game = {"mode": _ext_mode, "name": _ext_mode, "proc": None}
+else:
+    _launched_game = _run_launcher()
+    if _launched_game is None:
+        # User quit from the launcher — exit cleanly
+        cap.release()
+        cv2.destroyAllWindows()
+        exit()
+
+# Auto-switch ControlMode to match the launched game
+with state_lock:
+    ControlMode = _launched_game["mode"]
+prev_mode = ControlMode
+print(f"FacePlay: entering main loop in {ControlMode} mode — press Q to quit.")
 
 # ═══════════════════════════════════════════════════════════════════
 #  MAIN CAMERA LOOP
@@ -585,6 +1071,8 @@ while True:
         last_direction     = None
         last_brow_state    = False
         brow_sustain_count = 0
+        flappy_brow_until  = 0.0   # reset Flappy Bird debounce on mode change
+        shoot_next_fire_at = 0.0   # reset Space Invaders shoot timer on mode change
         prev_mode = current_mode
 
     # When unpausing: reset face-loss tracking so we don't immediately
@@ -660,6 +1148,25 @@ while True:
         # 2. Left EAR only low → left wink → dash
         # 3. Right EAR only low → intentionally ignored
         bothClosed = leftValue < WINK_THRESHOLD and rightValue < WINK_THRESHOLD
+        leftOnly   = leftValue  < LEFT_WINK_THRESHOLD  and rightValue >= WINK_THRESHOLD
+        rightOnly  = rightValue < RIGHT_WINK_THRESHOLD and leftValue  >= WINK_THRESHOLD
+
+        # ── Hold-blink exit (3 s sustained blink → close game) ───
+        # Only active in Pacman mode. Tracks wall-clock time of continuous
+        # eye closure; terminates the game subprocess after 3 seconds.
+        if current_mode == "Pacman":
+            if bothClosed:
+                if blink_hold_start is None:
+                    blink_hold_start = time.time()
+                elif time.time() - blink_hold_start >= 3.0:
+                    proc = _launched_game.get("proc")
+                    if proc and proc.poll() is None:
+                        proc.terminate()
+                    blink_hold_start = None
+            else:
+                blink_hold_start = None
+        else:
+            blink_hold_start = None
 
         # CHANGED: debounce is now time-based. Each eye has an "unlock time" —
         # a timestamp after which it is allowed to fire again. Checking
@@ -676,23 +1183,38 @@ while True:
             rightWinkUntil = now + WINK_DEBOUNCE_SEC
             res = keys.get(current_mode, {}).get("Blink")
             if res:
-                pyautogui.press(res)
-            action_text       = "ATTACKING" if current_mode == "Attack" else "INTERACTING"
+                if current_mode == "Flappy_Bird":
+                    _post_key_to_window("Flappy Bird", _VK_SPACE)
+                else:
+                    pyautogui.press(res)
+            if current_mode == "Attack":
+                action_text = "ATTACKING"
+            elif current_mode == "Mario":
+                action_text = "RUN BOOST"
+            elif current_mode == "Space_Invaders":
+                action_text = "PAUSE/START"
+            else:
+                action_text = "INTERACTING"
             action_text_until = now + ACTION_FEEDBACK_DUR
 
         else:
-            # ── Left wink only → dash ─────────────────────────────
-            # Only reachable when bothClosed is False, so a blink
-            # never triggers a dash at the same time.
-            if leftValue < WINK_THRESHOLD and now >= leftWinkUntil:
+            # ── Left wink only ────────────────────────────────────
+            if leftOnly and now >= leftWinkUntil:
                 leftWinkUntil = now + WINK_DEBOUNCE_SEC
                 res = keys.get(current_mode, {}).get("LeftWink")
                 if res:
                     pyautogui.press(res)
-                action_text       = "DASHING"
+                action_text       = "LEFT WINK"
                 action_text_until = now + ACTION_FEEDBACK_DUR
 
-            # right-only wink intentionally ignored
+            # ── Right wink only ───────────────────────────────────
+            elif rightOnly and now >= rightWinkUntil:
+                rightWinkUntil = now + WINK_DEBOUNCE_SEC
+                res = keys.get(current_mode, {}).get("RightWink")
+                if res:
+                    pyautogui.press(res)
+                action_text       = "RIGHT WINK"
+                action_text_until = now + ACTION_FEEDBACK_DUR
 
         # No cooldown tick needed — time.time() handles expiry automatically.
 
@@ -728,14 +1250,14 @@ while True:
         # has expired and release the key.
         if short_hop_release_at > 0 and time.time() >= short_hop_release_at:
             short_hop_release_at = 0.0
-            if current_mode == "Attack" and res:
+            if current_mode in _BROW_HOLD_MODES and res:
                 pyautogui.keyUp(res)
             last_brow_state = False
 
         if brow_up:
             brow_sustain_count += 1
 
-            if not last_brow_state and current_mode == "Attack":
+            if not last_brow_state and current_mode in _BROW_HOLD_MODES:
                 # Velocity path — fast upward flick → short hop.
                 # Fires immediately (no sustain wait) because the velocity
                 # spike itself is the noise filter: a brief geometry blip
@@ -758,12 +1280,44 @@ while True:
                     if res:
                         pyautogui.keyDown(res)
 
-            elif not last_brow_state and current_mode != "Attack":
+            elif not last_brow_state and current_mode == "Flappy_Bird":
+                # ── Flappy Bird: instant single press with strict debounce ──
+                # No sustain wait — Flappy Bird demands zero-latency response.
+                # FLAPPY_BIRD_DEBOUNCE_SEC (0.5 s) stops one eyebrow raise from
+                # registering twice and killing the run.  Uses its own debounce
+                # so the window is tunable independently of the wink debounce.
+                if now >= flappy_brow_until:
+                    flappy_brow_until = now + FLAPPY_BIRD_DEBOUNCE_SEC
+                    last_brow_state   = True
+                    if res:
+                        _post_key_to_window("Flappy Bird", _VK_SPACE)
+
+            elif not last_brow_state and current_mode == "Space_Invaders":
+                # ── Space Invaders: enter shoot-hold state ───────────────
+                # The first shot fires on this same frame (shoot_next_fire_at
+                # is set to now). Subsequent shots repeat every
+                # SHOOT_REPEAT_INTERVAL_MS while the eyebrow stays raised —
+                # handled in the repeat block below, outside this entry guard.
+                if brow_sustain_count >= BROW_SUSTAIN_FRAMES:
+                    last_brow_state    = True
+                    shoot_next_fire_at = now  # fire immediately on entry
+
+            elif not last_brow_state and current_mode == "Interact":
                 # Interact mode: single press after sustain (unchanged)
                 if brow_sustain_count >= BROW_SUSTAIN_FRAMES:
                     last_brow_state = True
                     if res:
                         pyautogui.press(res)
+
+        # ── Space Invaders: repeat shoot while eyebrow is held ────────
+        # Runs every frame while in shoot-hold state, independent of the
+        # brow_up entry logic above.  shoot_next_fire_at was set to now
+        # on the entry frame so the first shot fires immediately; all
+        # subsequent shots fire on the timer without re-checking brow_up.
+        if current_mode == "Space_Invaders" and last_brow_state:
+            if res and now >= shoot_next_fire_at:
+                pyautogui.press(res)
+                shoot_next_fire_at = now + SHOOT_REPEAT_INTERVAL_MS / 1000.0
 
         # Release uses brow_down (lower threshold) not brow_up.
         # keyUp fires as soon as the ratio drops below BROW_RELEASE_THRESHOLD,
@@ -775,11 +1329,15 @@ while True:
             brow_sustain_count = 0
             if last_brow_state and short_hop_release_at == 0.0:
                 last_brow_state = False
-                if current_mode == "Attack" and res:
+                if current_mode in _BROW_HOLD_MODES and res:
                     pyautogui.keyUp(res)
+                if current_mode == "Space_Invaders":
+                    shoot_next_fire_at = 0.0  # stop repeating when brow drops
+                # Flappy_Bird: last_brow_state resets here; no keyUp needed
+                # (was a press, not a hold) — next raise is now allowed.
 
         if last_brow_state:
-            active_gesture = "JUMPING" if current_mode == "Attack" else "INVENTORY"
+            active_gesture = _BROW_ACTIVE_LABEL.get(current_mode, "BROW ACTIVE")
 
     else:
         # ── No face detected ─────────────────────────────────────
@@ -791,6 +1349,8 @@ while True:
             brow_sustain_count   = 0
             prev_brow_ratio      = 0.0   # reset so velocity doesn't carry over
             short_hop_release_at = 0.0   # cancel any in-flight short-hop timer
+            flappy_brow_until    = 0.0   # reset Flappy Bird debounce
+            shoot_next_fire_at   = 0.0   # cancel Space Invaders shoot repeat
             horiz_active         = None
             last_direction     = None
             release_all_keys()
@@ -798,8 +1358,10 @@ while True:
         seconds_missing = time.time() - face_lost_time
 
         # Auto-pause after NO_FACE_PAUSE_DELAY seconds — press ESC once only
+        # Skip for Space Invaders (ESC quits) and Flappy Bird (no pause)
         if seconds_missing >= NO_FACE_PAUSE_DELAY and not auto_paused:
-            pyautogui.press('escape')
+            if current_mode not in ("Space_Invaders", "Flappy_Bird"):
+                pyautogui.press('escape')
             auto_paused = True
             with state_lock:
                 is_paused = True
@@ -817,7 +1379,11 @@ while True:
 
     last_confidence = 0.0   # reset each frame; used by debug overlay
 
-    if face_detected:
+    # Flappy Bird has no directional movement — UP arrow also flaps in that game,
+    # so we disable all head-direction key sending for this mode.
+    _head_dir_active = (current_mode != "Flappy_Bird")
+
+    if face_detected and _head_dir_active:
         try:
             direction, approx_yaw, confidence = head_model.predict(
                 fl_results.face_landmarks[0])
@@ -837,15 +1403,30 @@ while True:
         last_head_yaw = ay  # feeds brow turned-threshold next frame
 
         # ── DIAGONALS — checked first, bypass horizontal hysteresis ──
-        # All four diagonals fire as two quick successive key presses
-        # (one-shot: fires once when the diagonal is first detected, not
-        # every frame while held).  horiz_active is cleared so the
-        # horizontal hysteresis doesn't also try to manage those keys.
+        # Mario mode: hold both keys simultaneously (jump + run).
+        # All other modes: fire two quick successive presses (combo input).
+        # One-shot: fires only when first entering the diagonal direction.
+        # horiz_active is cleared so the horizontal hysteresis doesn't fight.
         if direction in _DIAGONALS:
             if horiz_active is not None:
                 horiz_active = None   # diagonal takes over; clear latched horiz
             if direction != last_direction:
-                send_keys(direction, current_mode)
+                if current_mode == "Mario":
+                    # Release all directional keys first (handles diagonal→diagonal
+                    # transitions cleanly), then hold both simultaneously.
+                    _km = head_keys["Mario"]
+                    pyautogui.keyUp(_km["left"]);  pyautogui.keyUp(_km["right"])
+                    pyautogui.keyUp(_km["up"]);    pyautogui.keyUp(_km["down"])
+                    if direction == "UP_RIGHT":
+                        pyautogui.keyDown(_km["up"]);   pyautogui.keyDown(_km["right"])
+                    elif direction == "UP_LEFT":
+                        pyautogui.keyDown(_km["up"]);   pyautogui.keyDown(_km["left"])
+                    elif direction == "DOWN_RIGHT":
+                        pyautogui.keyDown(_km["down"]); pyautogui.keyDown(_km["right"])
+                    elif direction == "DOWN_LEFT":
+                        pyautogui.keyDown(_km["down"]); pyautogui.keyDown(_km["left"])
+                else:
+                    send_keys(direction, current_mode)
                 last_direction = direction
 
         else:
@@ -892,13 +1473,13 @@ while True:
         # ── Update active gesture text for HUD ────────────────────
         if active_gesture == "":
             if last_direction == "UP_LEFT":
-                active_gesture = "FLICK UP → LEFT"
+                active_gesture = "JUMP + LEFT" if current_mode == "Mario" else "FLICK UP → LEFT"
             elif last_direction == "UP_RIGHT":
-                active_gesture = "FLICK UP → RIGHT"
+                active_gesture = "JUMP + RIGHT" if current_mode == "Mario" else "FLICK UP → RIGHT"
             elif last_direction == "DOWN_LEFT":
-                active_gesture = "FLICK DOWN → LEFT"
+                active_gesture = "DOWN + LEFT" if current_mode == "Mario" else "FLICK DOWN → LEFT"
             elif last_direction == "DOWN_RIGHT":
-                active_gesture = "FLICK DOWN → RIGHT"
+                active_gesture = "DOWN + RIGHT" if current_mode == "Mario" else "FLICK DOWN → RIGHT"
             elif horiz_active == "LEFT":
                 active_gesture = "MOVING LEFT"
             elif horiz_active == "RIGHT":
@@ -915,8 +1496,21 @@ while True:
     # ── Mode label — top left, large, colour-coded ────────────────
     # Orange for Attack (warm, action-oriented)
     # Blue for Interact (calm, exploration-oriented)
-    mode_label = "ATTACK" if current_mode == "Attack" else "INTERACT"
-    mode_color = (0, 120, 255) if current_mode == "Attack" else (200, 140, 0)
+    # Orange for Attack, blue for Interact, red for Mario
+    if current_mode == "Attack":
+        mode_label, mode_color = "ATTACK",          (0, 120, 255)
+    elif current_mode == "Pacman":
+        mode_label, mode_color = "PAC-MAN",         (0, 220, 255)
+    elif current_mode == "Interact":
+        mode_label, mode_color = "INTERACT",        (200, 140, 0)
+    elif current_mode == "Mario":
+        mode_label, mode_color = "MARIO",           (0, 60, 220)
+    elif current_mode == "Flappy_Bird":
+        mode_label, mode_color = "FLAPPY BIRD",     (0, 210, 255)
+    elif current_mode == "Space_Invaders":
+        mode_label, mode_color = "SPACE INVADERS",  (0, 220, 80)
+    else:
+        mode_label, mode_color = current_mode.upper(), (255, 255, 255)
     cv2.putText(frame, mode_label, (15, 48),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.3, mode_color, 3)
 
